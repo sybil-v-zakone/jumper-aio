@@ -1,0 +1,7 @@
+aiohttp==3.9.3
+aiohttp_proxy==0.1.2
+ccxt==4.0.95
+loguru==0.7.0
+tqdm==4.66.1
+web3==6.15.1
+telebot==0.0.5
