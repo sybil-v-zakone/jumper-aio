@@ -16,9 +16,11 @@ class TokenName(Enum):
     ETH = "eth"
     MATIC = "matic"
     BNB = "bnb"
+    USDC = "usdc"
 
 
 class TokenPriceApiId(Enum):
     ETH = "80"
     MATIC = "33536"
     BNB = "2710"
+    USDC = "33285"

@@ -9,10 +9,13 @@ from config import (
     OKX_WITHDRAW_AMOUNT_RANGE,
     BRIDGE_FULL_BALANCE,
     FINISH_CHAIN,
+    NATIVE_BRIDGE_MODE,
 )
 from core.cex.okx import Okx
 from core.client import Client
 from core.dapps import JumperBridge
+from core.models.enums import TokenName
+from core.models.token import Token
 from logger import logger
 from core.models.wallet import Wallet
 from modules.database import Database
@@ -96,16 +99,23 @@ async def perform_warmup_action(
 async def bridge_action(
         wallet: Wallet, wallet_index: int, database: Database, src_client: Client, dest_client: Client
 ) -> bool:
+
+    if NATIVE_BRIDGE_MODE:
+        src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
+    else:
+        if wallet.okx_withdrawn is not None and wallet.initial_balance is None:
+            src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+        else:
+            src_token = find_token(tokens=src_client.chain.tokens, symbol=TokenName.USDC.value)
+        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=TokenName.USDC.value)
+
     if wallet.initial_balance is not None:
-        if await check_if_bridge_finished(wallet=wallet, client=src_client):
+        if await check_if_bridge_finished(wallet=wallet, client=src_client, token=src_token):
             logger.success(f"Bridged token has successfully reached {src_client.chain.name.upper()}")
-            database.update_item(item_index=wallet_index, initial_balance=None)
         else:
             logger.warning(f"Bridged token is still inflight")
             return True
-
-    src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
-    dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
 
     if BRIDGE_FULL_BALANCE:
         amount = None
@@ -113,8 +123,10 @@ async def bridge_action(
         balance = await src_client.get_token_balance(src_token, wei=False)
         amount = round(balance * random.randint(*BRIDGE_PERCENTAGE_RANGE) / 100, src_token.round_to)
 
-    if amount is None or round(amount, 4) > 0:
-        tx_status, _ = await JumperBridge(client=src_client).bridge(amount=amount, token=src_token, dest_chain=dest_client.chain)
+    if amount is None or round(amount, src_token.round_to - 2) > 0:
+        tx_status, _ = await JumperBridge(client=src_client).bridge(
+            amount=amount, token_in=src_token, token_out=dest_token, dest_chain=dest_client.chain
+        )
     else:
         tx_status = False
         logger.error(f"Amount of {src_token.symbol.upper()} in chain {src_client.chain.name.upper()} very low")
@@ -123,7 +135,7 @@ async def bridge_action(
         database.update_item(
             item_index=wallet_index,
             current_chain=dest_client.chain.name,
-            initial_balance=await dest_client.get_token_balance(dest_token, wei=False)
+            initial_balance=round(await dest_client.get_token_balance(dest_token, wei=False), dest_token.round_to)
         )
 
         database.decrease_bridge_count(item_index=wallet_index, wallet=wallet, chain=src_client.chain)
@@ -149,7 +161,6 @@ async def okx_withdraw_action(wallet_index: int, database: Database, client: Cli
     return True
 
 
-async def check_if_bridge_finished(wallet: Wallet, client: Client) -> bool:
-    token = find_token(tokens=client.chain.tokens, symbol=client.chain.coin_symbol)
+async def check_if_bridge_finished(wallet: Wallet, client: Client, token: Token) -> bool:
     current_balance = await client.get_token_balance(token, wei=False)
     return current_balance > wallet.initial_balance

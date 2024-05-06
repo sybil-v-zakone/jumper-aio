@@ -6,14 +6,19 @@ from config import (
     TX_DELAY_RANGE,
     OKX_WITHDRAW_AMOUNT_RANGE,
     MANUAL_TRANSFERS_MODE,
-    USE_OKX_WITHDRAW,
     VOLUME_BRIDGE_PERCENTAGE_RANGE,
-    AMOUNT_TO_LEAVE_RANGE, CHAINS_TO_VOLUME, BRIDGE_FULL_BALANCE,
+    AMOUNT_TO_LEAVE_RANGE,
+    CHAINS_TO_VOLUME,
+    BRIDGE_FULL_BALANCE,
+    NATIVE_BRIDGE_MODE,
+    USE_OKX_WITHDRAW,
 )
 from core import Client
 from core.cex.okx import Okx
 from core.dapps import JumperBridge
 from core.models.chain import Chain
+from core.models.enums import TokenName
+from core.models.token import Token
 from core.models.wallet import Wallet
 from logger import logger
 from modules.database import Database
@@ -64,10 +69,14 @@ async def perform_volume_mode_cycle(database: Database, wallet: Wallet, wallet_i
             return False
 
         src_client = wallet.to_client(chain=src_chain)
-        jumper = JumperBridge(client=src_client)
-
         dest_client = wallet.to_client(chain=get_random_volume_chain(excluded_chain=src_chain))
-        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
+
+        if NATIVE_BRIDGE_MODE:
+            src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+            dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
+        else:
+            src_token = find_token(tokens=src_client.chain.tokens, symbol=TokenName.USDC.value)
+            dest_token = find_token(tokens=dest_client.chain.tokens, symbol=TokenName.USDC.value)
 
         if wallet.volume_mode_state['okx_withdrawn'] is None and USE_OKX_WITHDRAW:
             if not await okx_withdraw_action(
@@ -78,16 +87,19 @@ async def perform_volume_mode_cycle(database: Database, wallet: Wallet, wallet_i
             ):
                 return False
 
+            if not NATIVE_BRIDGE_MODE:
+                src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+                dest_token = find_token(tokens=dest_client.chain.tokens, symbol=TokenName.USDC.value)
+
         if wallet.volume_mode_state["initial_balance"] is not None:
-            if await check_if_bridge_finished(wallet=wallet, client=src_client):
+            if await check_if_bridge_finished(wallet=wallet, client=src_client, token=src_token):
                 logger.success(f"Bridged token has successfully reached {src_client.chain.name.upper()}")
-                wallet.volume_mode_state['initial_balance'] = None
                 database.update_item(item_index=wallet_index, volume_mode_state=wallet.volume_mode_state)
             else:
                 logger.warning(f"Bridged token is still inflight")
+                await sleep(delay_range=TX_DELAY_RANGE, send_message=False)
                 continue
 
-        src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
         src_balance = await src_client.get_token_balance(src_token, wei=False)
 
         if BRIDGE_FULL_BALANCE:
@@ -95,10 +107,13 @@ async def perform_volume_mode_cycle(database: Database, wallet: Wallet, wallet_i
         else:
             amount = round(src_balance * random.randint(*VOLUME_BRIDGE_PERCENTAGE_RANGE) / 100, src_token.round_to)
 
-        tx_status, bridged_amount = await jumper.bridge(token=src_token, amount=amount, dest_chain=dest_client.chain)
-
-        if not tx_status:
-            continue
+        if amount is None or round(amount, src_token.round_to - 2) > 0:
+            tx_status, bridged_amount = await JumperBridge(client=src_client).bridge(
+                amount=amount, token_in=src_token, token_out=dest_token, dest_chain=dest_client.chain
+            )
+        else:
+            logger.error(f"Amount of {src_token.symbol.upper()} in chain {src_client.chain.name.upper()} very low")
+            break
 
         wallet.volume_mode_state['initial_balance'] = round(
             await dest_client.get_token_balance(dest_token, wei=False), dest_token.round_to
@@ -109,15 +124,52 @@ async def perform_volume_mode_cycle(database: Database, wallet: Wallet, wallet_i
 
         await sleep(delay_range=TX_DELAY_RANGE, send_message=False)
 
+    if not NATIVE_BRIDGE_MODE:
+        if not await bridge_to_native(database=database, wallet=wallet, wallet_index=wallet_index):
+            return False
+
     if not wallet.volume_mode_state['deposited_to_cex']:
-        if not await transfer_to_cex_action(
-                database=database,
-                wallet=wallet,
-                wallet_index=wallet_index,
-                client=wallet.to_client(chain=get_chain_by_name(wallet.volume_mode_state['current_chain']))
-        ):
+        if not await transfer_to_cex_action(database=database, wallet=wallet, wallet_index=wallet_index):
             return False
     return True
+
+
+async def bridge_to_native(wallet: Wallet, database: Database, wallet_index: int):
+    while True:
+        src_client = wallet.to_client(chain=get_chain_by_name(wallet.volume_mode_state['current_chain']))
+        src_token = find_token(tokens=src_client.chain.tokens, symbol=TokenName.USDC.value)
+        src_balance = await src_client.get_token_balance(src_token, wei=False)
+
+        dest_client = wallet.to_client(get_random_volume_chain(excluded_chain=src_client.chain))
+        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
+
+        if await check_if_bridge_finished(wallet=wallet, client=src_client, token=src_token):
+            logger.success(f"Bridged token has successfully reached {src_client.chain.name.upper()}")
+        else:
+            logger.warning(f"Bridged token is still inflight")
+            await sleep(delay_range=TX_DELAY_RANGE, send_message=False)
+            continue
+
+        if BRIDGE_FULL_BALANCE:
+            amount = None
+        else:
+            amount = round(src_balance * random.randint(*VOLUME_BRIDGE_PERCENTAGE_RANGE) / 100, src_token.round_to)
+
+        if amount is None or round(amount, src_token.round_to - 2) > 0:
+            tx_status, _ = await JumperBridge(client=src_client).bridge(
+                amount=amount, token_in=src_token, token_out=dest_token, dest_chain=dest_client.chain
+            )
+        else:
+            return True
+
+        if tx_status:
+            wallet.volume_mode_state['initial_balance'] = round(
+                await dest_client.get_token_balance(dest_token, wei=False), dest_token.round_to
+            )
+            wallet.volume_mode_state['current_chain'] = dest_client.chain.name
+            database.update_item(item_index=wallet_index, volume_mode_state=wallet.volume_mode_state)
+            await sleep(delay_range=TX_DELAY_RANGE, send_message=False)
+        return True
 
 
 async def okx_withdraw_action(wallet: Wallet, wallet_index: int, database: Database, client: Client) -> bool:
@@ -140,28 +192,37 @@ async def okx_withdraw_action(wallet: Wallet, wallet_index: int, database: Datab
     return True
 
 
-async def transfer_to_cex_action(database: Database, wallet: Wallet, wallet_index: int, client: Client) -> bool:
-    token = find_token(client.chain.tokens, client.chain.coin_symbol)
-    balance = await client.get_token_balance(token, wei=False)
+async def transfer_to_cex_action(database: Database, wallet: Wallet, wallet_index: int) -> bool:
+    while True:
+        src_client = wallet.to_client(chain=get_chain_by_name(wallet.volume_mode_state['current_chain']))
+        src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+        if await check_if_bridge_finished(wallet=wallet, client=src_client, token=src_token):
+            logger.success(f"Bridged token has successfully reached {src_client.chain.name.upper()}")
+        else:
+            logger.warning(f"Bridged token is still inflight")
+            await sleep(delay_range=TX_DELAY_RANGE, send_message=False)
+            continue
 
-    amount_to_leave = random.uniform(*AMOUNT_TO_LEAVE_RANGE)
+        balance = await src_client.get_token_balance(src_token, wei=False)
 
-    if balance < amount_to_leave:
-        logger.error(f"AMOUNT_TO_LEAVE in {client.chain} is more than actual account balance")
-        return False
+        amount_to_leave = random.uniform(*AMOUNT_TO_LEAVE_RANGE)
 
-    if MANUAL_TRANSFERS_MODE:
-        amount_to_transfer = token.to_wei(float(input(f"Enter amount of {token.symbol} to send to CEX: ")))
-    else:
-        amount_to_transfer = token.to_wei(balance - amount_to_leave)
-
-    if amount_to_transfer > 0:
-        if not await client.transfer(to_address=wallet.deposit_address, amount=amount_to_transfer):
+        if balance < amount_to_leave:
+            logger.error(f"AMOUNT_TO_LEAVE in {src_client.chain.name} is more than actual account balance")
             return False
 
-    wallet.volume_mode_state['deposited_to_cex'] = True
-    database.update_item(item_index=wallet_index, volume_mode_state=wallet.volume_mode_state)
-    return True
+        if MANUAL_TRANSFERS_MODE:
+            amount_to_transfer = src_token.to_wei(float(input(f"Enter amount of {src_token.symbol} to send to CEX: ")))
+        else:
+            amount_to_transfer = src_token.to_wei(balance - amount_to_leave)
+
+        if amount_to_transfer > 0:
+            if not await src_client.transfer(to_address=wallet.deposit_address, amount=amount_to_transfer):
+                return False
+
+        wallet.volume_mode_state['deposited_to_cex'] = True
+        database.update_item(item_index=wallet_index, volume_mode_state=wallet.volume_mode_state)
+        return True
 
 
 def get_random_volume_chain(excluded_chain: Chain):
@@ -173,7 +234,6 @@ def get_random_volume_chain(excluded_chain: Chain):
     return get_chain_by_name(random.choice(chains))
 
 
-async def check_if_bridge_finished(wallet: Wallet, client: Client) -> bool:
-    token = find_token(tokens=client.chain.tokens, symbol=client.chain.coin_symbol)
+async def check_if_bridge_finished(wallet: Wallet, client: Client, token: Token) -> bool:
     current_balance = await client.get_token_balance(token, wei=False)
     return current_balance > wallet.volume_mode_state["initial_balance"]

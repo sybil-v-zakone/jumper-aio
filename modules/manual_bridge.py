@@ -7,9 +7,11 @@ from config import (
     BRIDGE_FULL_BALANCE,
     FINISH_CHAIN,
     START_CHAIN,
+    NATIVE_BRIDGE_MODE,
 )
 from core.client import Client
 from core.dapps import JumperBridge
+from core.models.enums import TokenName
 from logger import logger
 from modules.database import Database
 from utils import sleep, change_ip, find_token, get_chain_by_name
@@ -41,7 +43,12 @@ async def manual_bridge():
 
 
 async def bridge_action(src_client: Client, dest_client: Client, wallet_index: int, database: Database) -> None:
-    src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+    if NATIVE_BRIDGE_MODE:
+        src_token = find_token(tokens=src_client.chain.tokens, symbol=src_client.chain.coin_symbol)
+        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=dest_client.chain.coin_symbol)
+    else:
+        src_token = find_token(tokens=src_client.chain.tokens, symbol=TokenName.USDC.value)
+        dest_token = find_token(tokens=dest_client.chain.tokens, symbol=TokenName.USDC.value)
 
     if BRIDGE_FULL_BALANCE:
         amount = None
@@ -50,7 +57,10 @@ async def bridge_action(src_client: Client, dest_client: Client, wallet_index: i
         amount = round(balance * random.randint(*BRIDGE_PERCENTAGE_RANGE) / 100, src_token.round_to)
 
     if amount is None or round(amount, 4) > 0:
-        tx_status, _ = await JumperBridge(client=src_client).bridge(amount=amount, token=src_token, dest_chain=dest_client.chain)
+        tx_status, _ = await JumperBridge(client=src_client).bridge(
+            amount=amount, token_in=src_token, token_out=dest_token, dest_chain=dest_client.chain
+        )
+
     else:
         tx_status = False
         logger.error(f"Amount of {src_token.symbol.upper()} in chain {src_client.chain.name.upper()} very low")

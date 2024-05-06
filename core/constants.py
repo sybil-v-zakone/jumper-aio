@@ -1,4 +1,6 @@
+from core.utils import read_from_json
 # CLIENT CONFIGURATION
+
 VERIFY_TX_TIMEOUT = 300
 
 GAS_LIMIT_MULTIPLIER = 1.2
@@ -7,7 +9,6 @@ GAS_PRICE_MULTIPLIER = 1.1
 RETRIES = 3
 RETRY_DELAY_RANGE = [5, 10]
 
-NATIVE_TOKEN_CONTRACT_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 MAX_SLIPPAGE = 5
 
@@ -21,6 +22,9 @@ JUMPER_BUILD_TX_URL = "https://li.quest/v1/advanced/stepTransaction"
 
 JUMPER_TX_SIMULATION_VALUE = 100000000000000
 JUMPER_FULL_BRIDGE_GAS_MULTIPLIER = 1.3
+
+# ERC20 TOKENS ABI
+ERC20_CONTRACT_ABI = read_from_json(file_path="core/abi/erc20_abi.json")
 
 # regex for matching the valid proxy format
 PROXY_PATTERN = r"^([^:@\s]+):([^:@\s]+)@([a-zA-Z0-9.-]+|\d+\.\d+\.\d+\.\d+):(\d+)$"

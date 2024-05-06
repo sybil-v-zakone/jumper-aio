@@ -27,6 +27,13 @@ WAIT_FOR_DEPOSIT_DELAY_RANGE = [60, 60]
 # Диапазон для задержки между транзакциями
 TX_DELAY_RANGE = [10, 15]
 
+# Если True, то все бриджи будут только нативными токенами, если False - будут бриджиться только USDC, но самый первый
+# бридж будет из нативного токена в usdc. В вармапе если не было вывода с окх, то будет бридж сразу из usdc.
+# В коллекторе если True - будет собирать нативный токен со всех сетей в FINISH_CHAIN, если False - usdc со всех сетей
+# в нативный токен FINISH_CHAIN.
+# В manual bridge при True - будет отправлена из START_CHAIN в FINISH_CHAIN нативка, если False, то usdc
+NATIVE_BRIDGE_MODE = False
+
 # Стартовая сеть для вольюм и manual bridge (варианты: arbitrum, base, bsc, ethereum, linea, optimism, polygon, zkera).
 # Если этот параметр пуст для вольюм мода, то стартовая сеть будет выбрана случайно из CHAINS_TO_VOLUME
 START_CHAIN = "base"
